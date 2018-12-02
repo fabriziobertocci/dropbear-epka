@@ -1,0 +1,6 @@
+To generate configure script, run:
+autoreconf -iv [-f to force]
+
+
+
+
