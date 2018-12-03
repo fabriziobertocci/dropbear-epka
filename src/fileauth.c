@@ -55,6 +55,12 @@
 #define MSG_PREFIX              "[" PLUGIN_NAME "] - "
 
 /*
+ * The following function is implemented in dropbear (it's part of
+ * the libtomcrypt, included in dropbear). For the plugin to be 
+ * able to access global symbols defined in the loader application
+ * (dropbear) you need to link dropbear with the option -rdynamic
+ *
+ *
    Relaxed base64 decode a block of memory
    @param in       The base64 data to decode
    @param inlen    The length of the base64 data
@@ -62,7 +68,7 @@
    @param outlen   [in/out] The max size and resulting size of the decoded data
    @return CRYPT_OK(0) if successful
 */
-int base64_decode(const unsigned char *in,  unsigned long inlen,
+extern int base64_decode(const unsigned char *in,  unsigned long inlen,
                         unsigned char *out, unsigned long *outlen);
 
 /* The plugin instance, extends EPKAInstance */
@@ -277,6 +283,7 @@ static void MyDeletePlugin(struct EPKAInstance *instance) {
 
 }
 
+/* The plugin entry point */
 void * plugin_new(int verbose, const char *options, const char *addrstring) {
     struct MyPlugin *retVal;
     FILE *fp;
