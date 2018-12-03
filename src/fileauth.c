@@ -184,7 +184,7 @@ static int MyCheckPubKey(struct EPKAInstance *instance,
                 foundNode = node;
             }
         }
-        if (foundNode) {
+        if (!foundNode) {
             /* Auth failed: no match */
             if (me->m_verbose) {
                 printf(MSG_PREFIX "pre-auth failed: no matching entry\n");
@@ -277,7 +277,7 @@ static void MyDeletePlugin(struct EPKAInstance *instance) {
 
 }
 
-void * plugin_new(int verbose, const char *options) {
+void * plugin_new(int verbose, const char *options, const char *addrstring) {
     struct MyPlugin *retVal;
     FILE *fp;
     cJSON *jsonRoot;
@@ -321,7 +321,7 @@ void * plugin_new(int verbose, const char *options) {
     retVal->m_jsonRoot = jsonRoot;
 
     if (verbose) {
-        printf(MSG_PREFIX "plugin initialized - config file = %s\n", (options ? options : "<N/A>"));
+        printf(MSG_PREFIX "plugin initialized - config file = %s, clientIP=%s\n", (options ? options : "<N/A>"), addrstring);
     }
     return &retVal->m_parent;
 

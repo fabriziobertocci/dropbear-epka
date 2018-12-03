@@ -101,10 +101,10 @@ static void MyDeletePlugin(struct EPKAInstance *instance) {
     printf(MSG_PREFIX "plugin_delete called\n");
 }
 
-void * plugin_new(int verbose, const char *options) {
+void * plugin_new(int verbose, const char *options, const char *addrstring) {
     struct MyPlugin *retVal;
     if (!options) options = "<NULL>";
-    printf(MSG_PREFIX "plugin_init called - options = %s\n", options);
+    printf(MSG_PREFIX "plugin_init called - options = %s, clientIP=%s\n", options, addrstring);
     retVal = calloc(1, sizeof(*retVal));
     retVal->m_parent.api_version[0] = DROPBEAR_EPKA_VERSION_MAJOR;
     retVal->m_parent.api_version[1] = DROPBEAR_EPKA_VERSION_MINOR;
