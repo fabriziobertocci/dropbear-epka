@@ -39,12 +39,29 @@ dnl ****************************************************************************
 dnl * Enable/disable compiler warnings                                                           *
 dnl **********************************************************************************************
 AC_ARG_ENABLE(warnings,
-[  --enable-warnings      enable compiler warnings during build ],
+[  --enable-warnings       enable compiler warnings during build ],
 [
         CFLAGS="$CFLAGS -Wall -Wpointer-arith -Wwrite-strings -Wconversion -Wcast-qual -W"
 ],[
         CFLAGS="$CFLAGS -W"
 ])
+
+
+dnl **********************************************************************************************
+dnl * MySQL-based plugin                                                                         *
+dnl **********************************************************************************************
+AC_ARG_ENABLE(mysql,
+[  --enable-mysql          build MySQL plugin (requires libmysqlclient-dev)],
+[
+        CFLAGS="$CFLAGS `pkg-config --cflags mysqlclient`"
+        LIBS="$LIBS `pkg-config --libs --static mysqlclient`"
+        AC_MSG_RESULT(Building the MySQL plug-in)
+        temp=true
+],[
+        AC_MSG_RESULT(NOT building the MySQL plug-in)
+        temp=false
+])
+AM_CONDITIONAL([EPKA_BUILD_MYSQL], [test x$temp = xtrue])
 
 
 AC_OUTPUT(Makefile src/Makefile)

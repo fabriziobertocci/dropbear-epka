@@ -162,6 +162,20 @@ static int matchLine(cJSON *node,
     return 1;
 }
 
+static char * MyGetOptions(struct EPKASession *_session) {
+    struct MySession *session = (struct MySession *)_session;
+    // struct MyPlugin *me = (struct MyPlugin *)_session->plugin_instance;
+    cJSON *optionNode = cJSON_GetObjectItem(session->m_cachedUser, "options");
+    if (!optionNode) {
+        return NULL;
+    }
+    if (optionNode->type != cJSON_String) {
+        printf(MSG_PREFIX "invalid type for 'option' property: not a string");
+        return NULL;
+    }
+    return optionNode->valuestring;
+}
+
 static int MyCheckPubKey(struct EPKAInstance *instance, 
         struct EPKASession **sessionInOut,
         const char* algo, 
@@ -178,7 +192,6 @@ static int MyCheckPubKey(struct EPKAInstance *instance,
     if (!retVal) {
         /* Authenticate by scanning the JSON file */
         cJSON *node;
-        cJSON *optionNode;
         cJSON *foundNode = NULL;
         for (node = me->m_jsonRoot->child; node; node = node->next) {
             if (matchLine(node, algo, algolen, keyblob, keybloblen, username)) {
@@ -207,14 +220,11 @@ static int MyCheckPubKey(struct EPKAInstance *instance,
         }
 
         retVal->m_parent.plugin_instance = instance;
+        retVal->m_parent.get_options = MyGetOptions;
 
         retVal->m_cachedUser = foundNode;    /* Save ptr to auth entry */
         retVal->m_cachedUserName = cJSON_GetObjectItem(foundNode, "user")->valuestring;  /* Already guaranteed it exist */
-        optionNode = cJSON_GetObjectItem(foundNode, "options");
-        if (optionNode && optionNode->type == cJSON_String) {
-            retVal->m_parent.auth_options = optionNode->valuestring;
-            retVal->m_parent.auth_options_length = strlen(retVal->m_parent.auth_options);
-        }
+
         *sessionInOut = &retVal->m_parent;
         if (me->m_verbose) {
             printf(MSG_PREFIX "user '%s' pre-auth success\n", username);
@@ -248,14 +258,9 @@ static void MyAuthSuccess(struct EPKASession *_session) {
 
 static void MyDeleteSession(struct EPKASession *_session) {
     struct MySession *session = (struct MySession *)_session;
-    struct MyPlugin *me = (struct MyPlugin *)_session->plugin_instance;
 
     if (session) {
-        if (_session->auth_options) {
-            free(_session->auth_options);
-            _session->auth_options = NULL;
-            _session->auth_options_length = 0;
-        }
+        struct MyPlugin *me = (struct MyPlugin *)_session->plugin_instance;
         free(session);
         if (me->m_verbose) {
             printf(MSG_PREFIX "session_deleted\n");
@@ -286,8 +291,7 @@ static void MyDeletePlugin(struct EPKAInstance *instance) {
 /* The plugin entry point */
 void * plugin_new(int verbose, const char *options, const char *addrstring) {
     struct MyPlugin *retVal;
-    FILE *fp;
-    cJSON *jsonRoot;
+    cJSON *jsonRoot = NULL;
     char *confFile = NULL;
     long confFileLength = 0;
     const char *errMsg = NULL;

@@ -46,6 +46,9 @@ struct MySession {
     int                     m_clientId;
 };
 
+static char * MyGetOptions(struct EPKASession *_session) {
+    return "no-X11-forwarding,no-pty";
+}
 
 static int MyCheckPubKey(struct EPKAInstance *instance, 
         struct EPKASession **sessionInOut,
@@ -63,10 +66,8 @@ static int MyCheckPubKey(struct EPKAInstance *instance,
             return -1; /* Failure */
         }
         retVal->m_parent.plugin_instance = instance;
-
+        retVal->m_parent.get_options = MyGetOptions;
         retVal->m_clientId = random();
-        retVal->m_parent.auth_options = strdup("no-X11-forwarding,no-pty");
-        retVal->m_parent.auth_options_length = strlen(retVal->m_parent.auth_options);
         *sessionInOut = &retVal->m_parent;
     } 
 
@@ -85,11 +86,6 @@ static void MyDeleteSession(struct EPKASession *_session) {
     struct MyPlugin *me = (struct MyPlugin *)_session->plugin_instance;
 
     printf(MSG_PREFIX "session_deleted\n");
-    if (_session->auth_options) {
-        free(_session->auth_options);
-        _session->auth_options = NULL;
-        _session->auth_options_length = 0;
-    }
     free(session);
 }
 
