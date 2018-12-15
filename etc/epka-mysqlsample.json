@@ -1,0 +1,21 @@
+{
+    "dbHost": "127.0.0.1",
+    "dbPort": 3306,
+    "dbUser": "dropbear",
+    "dbPass": "ThisIsMyDropbearPassword",
+    "dbName": "iotDatabase",
+    "tableAuth": "dev_auth",
+    "tableStatus": "dev_status",
+    "tableLog": "dev_conn_log",
+
+    "colClientId": "client_id",
+    "colAuthUser": "user",
+    "colAuthKeyform": "keyform",
+    "colAuthPubkey": "pubkey",
+    "colAuthPubKeyhash": "keyhash",
+    "colStatusConnected": "connected",
+    "colStatusPid": "pid",
+    "colStatusAddress": "address",
+    "colLogTs": "ts",
+    "colLogEvent": "event"
+}
