@@ -14,15 +14,15 @@ When you define this flag:
   Separate the plugin name from the options using a comma.
 
 
-If ```-A``` argument is specified:
+Starting the dropbear server with ```-A``` argument:
 
-* A plug-in instance is created when a new server session is created (when a client connects)
+* The plug-in (shared library) is loaded an an istance is created (this occur only when a client connects)
 
-* Pubkey authentication is then attempted through the plug-in. 
+* Pubkey authentication is then attempted through the plug-in (if client request public key authentication).
   If the plug-in fails to authenticate the given user, dropbear will still try to authenticate
   using public key through the ```~/.ssh/authorized_keys``` file.
 
-* During pre-auth, the plug-in creates an ssh session. The plug-in can use the session
+* During pre-auth, the plug-in creates a ssh session. The plug-in can use the session
   to cache any information about the pre-authenticated user.
 
 * After authentication is completed, the plug-in is notified of the successful operation. 
@@ -30,6 +30,7 @@ If ```-A``` argument is specified:
 
 * When the client disconnects, dropbear will call into the plug-in to delete the session. 
   The plug-in can also use this callback to perfom some action when the client disconnect.
+
 
 --------------------
 ## What should I do with it?
@@ -116,4 +117,44 @@ An example of the JSON file is:
     }
 ]
 ```
+### 3. ```dbauth.c```
+This plugin uses MySQL to authenticate a user. The plug-in takes as argument the name of 
+a configuration file in JSON format. The file is parsed when the plug-in instance
+is created.
+The configuration file contains information like:
+
+* Location of the database to use
+* User name and password to access the MySQL
+* Name of the table containing the authentication columns (required)
+* Name of the table where the plug-in will record a client status (connected/disconnected)
+* Name of the table the plug-in will use to log connections from clients
+* Name of the columns of the table to operate like:
+   * Name of the column containing the keyform (as string)
+   * Name of the column containing the public key (as blob)
+   * Name of the column containing the user name (as string)
+   * Name of the column containing the SHA256 of the keyblob (see note)
+   * ...
+
+Look at the example configuration file under ```etc/epka-mysqlsample.json``` 
+
+The plugin will query the auth table first by performing a SELECT using the 
+user name, key form and the SHA256 of the public key (the reason why the plug-in
+uses a SHA256 of the key instead of the binary key itself is only for efficiency.
+You can easily create indexes containing the hash of the key but some database
+instances might have limitation on the maximum size of a column used in an index.
+
+The plug-in during auth query also read the value of a 'client ID' column that
+uniquely identify this client. This client ID is then used in subsequent queries:
+
+* To update the client state (if the state table is specified)
+   * when a client successfully authenticate it will run an UPDATE statement using 
+the retrieved client ID as selector for the update
+   * when the client disconnect, it will run a similar update to mark the client
+status to 0 (disconnected).
+
+* Similarly to append to the log table:
+   * an INSERT operation is performed whenever a client is connected or disconnected.
+
+Refer to the plug-in source code for additional information (and to see
+the full SQL statements performed).
 

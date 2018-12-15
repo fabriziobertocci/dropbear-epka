@@ -40,7 +40,7 @@
  * "tableLog": string    - [OPTIONAL] Name of the table where to log the event
  *
  * Configurable Column Information - All those values are OPTIONAL strings. Default values are provided:
- * "colClientId": ["client_id"] Name of the column that identify the client connecting to the server
+ * "colClientId": ["client_id"] Name of the column that identify the client connecting to the server - REQUIRED
  * "colAuthUser": ["user"] Name of the user
  * "colAuthKeyform": ["keyform"] Key form as string
  * "colAuthPubkey": ["pubkey"] Key in binary format
