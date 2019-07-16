@@ -16,7 +16,7 @@ When you define this flag:
 
 Starting the dropbear server with ```-A``` argument:
 
-* The plug-in (shared library) is loaded an an istance is created (this occur only when a client connects)
+* The plug-in (shared library) is loaded and an istance is created (this occur only when a client connects)
 
 * Pubkey authentication is then attempted through the plug-in (if client request public key authentication).
   If the plug-in fails to authenticate the given user, dropbear will still try to authenticate
