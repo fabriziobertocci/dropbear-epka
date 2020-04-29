@@ -77,7 +77,7 @@
  *
  */
 
-
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,8 +107,14 @@ extern void dropbear_log(int priority, const char* format, ...);
 struct MyPlugin {
     struct EPKAInstance     m_parent;
  
+    /* Database Information */
+    char *                  m_dbHost;
+    int                     m_dbPort;
+    char *                  m_dbUser;
+    char *                  m_dbPass;
+    char *                  m_dbTableName;
     MYSQL *                 m_dbConn;
-    MYSQL_STMT *            m_authStmt;
+    // MYSQL_STMT *            m_authStmt;
 
     int                     m_verbose;
     char *                  m_clientIp;     // strdup of IP address, optional - Only IP, not the port
@@ -141,24 +147,6 @@ struct MyPlugin {
     char *                  m_colLogEvent;
 };
 
-// The Precompiled statement:
-static const char * const PRECOMP_STATEMENT_STRING = 
-//               cli   opts  pubkey    table      user       keyform    keyhash
-//               |     |     |         |          |          |          |
-        "SELECT `%s`, `%s`, `%s` FROM `%s` WHERE `%s`=? AND `%s`=? AND `%s`=UNHEX(SHA2(?, 256))";
-//               |     |     |                        |          |                     |
-//               r0    r1    r2                       q0         q1                    q2
-
-static const char * const AUTH_SUCCESS_QUERY = 
-//               table    conn  1/0  pid   xxx  addr   IP          cliId   val
-//               |        |     |    |     |    |      |           |       |
-        "UPDATE `%s` SET `%s` = %d, `%s` = %d, `%s` = \"%s\" WHERE `%s` = \"%s\"";
-
-static const char * const LOG_ENTRY_QUERY = 
-//                    table cli   ts    event          cli            event
-//                    |     |     |     |              |              |
-        "INSERT INTO `%s` (`%s`, `%s`, `%s`) VALUES (\"%s\", now(), \"%s\")";
-
 static const char * const LOG_ENTRY_KEYWORD_CONNECTED    = "CONNECT";
 static const char * const LOG_ENTRY_KEYWORD_DISCONNECTED = "DISCONN";
 
@@ -176,6 +164,40 @@ struct MySession {
 };
 
 
+// {{{ databaseConnect
+// ----------------------------------------------------------------------------
+// Returns 1 if success, 0 if an error occurred
+static int databaseConnect(struct MyPlugin *me) {
+    my_bool arg = 1;
+
+    // Connect to database
+    me->m_dbConn = mysql_init(NULL);
+    if (!me->m_dbConn) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "Database connection initialization failed");
+        return 0;
+    }
+
+    if (mysql_options(me->m_dbConn, MYSQL_OPT_RECONNECT, &arg)) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "Failed to set database reconnect option : %s", mysql_error(me->m_dbConn));
+        return 0;
+    }
+
+    if (!mysql_real_connect(me->m_dbConn,
+                me->m_dbHost,
+                me->m_dbUser,
+                me->m_dbPass,
+                me->m_dbTableName,
+                me->m_dbPort,
+                NULL,                   // Unix socket
+                0)) {                   // Client flags
+        dropbear_log(LOG_ERR, MSG_PREFIX "Database connection failed: %s", mysql_error(me->m_dbConn));
+        return 0;
+    }
+    return 1;
+
+}
+
+// }}}
 // {{{ readProperty
 // ----------------------------------------------------------------------------
 // Returns 1 if success, 0 if an error occurred
@@ -227,10 +249,10 @@ static int initFromConfig(struct MyPlugin *me, const char *configFile) {
     }
 
     if ( !( 
-            readProperty(me->m_configRoot, "dbHost", 1, NULL, &dbHost) &&
-            readProperty(me->m_configRoot, "dbUser", 1, NULL, &dbUser) &&
-            readProperty(me->m_configRoot, "dbPass", 1, NULL, &dbPass) &&
-            readProperty(me->m_configRoot, "dbName", 1, NULL, &dbName) &&
+            readProperty(me->m_configRoot, "dbHost", 1, NULL, &me->m_dbHost) &&
+            readProperty(me->m_configRoot, "dbUser", 1, NULL, &me->m_dbUser) &&
+            readProperty(me->m_configRoot, "dbPass", 1, NULL, &me->m_dbPass) &&
+            readProperty(me->m_configRoot, "dbName", 1, NULL, &me->m_dbTableName) &&
 
             readProperty(me->m_configRoot, "tableAuth", 1, NULL, &me->m_tableAuth) &&
             readProperty(me->m_configRoot, "tableStatus", 0, NULL, &me->m_tableStatus) &&
@@ -254,27 +276,15 @@ static int initFromConfig(struct MyPlugin *me, const char *configFile) {
 
     // Finally read the port (not a string)
     val = cJSON_GetObjectItem(me->m_configRoot, "dbPort");
-    if (val) {
-        dbPort = val->valueint;
-    }
+    /* If unset, use the default 3306 */
+    me->m_dbPort = val ? val->valueint : 3306;
 
     // Connect to database
-    me->m_dbConn = mysql_init(NULL);
-    if (!me->m_dbConn) {
-        goto done;
-    }
-    if (!mysql_real_connect(me->m_dbConn,
-                dbHost,
-                dbUser,
-                dbPass,
-                dbName,
-                dbPort,
-                NULL,                   // Unix socket
-                0)) {                   // Client flags
-        dropbear_log(LOG_ERR, MSG_PREFIX "Database connection failed: %s", mysql_error(me->m_dbConn));
+    if (!databaseConnect(me)) {
         goto done;
     }
 
+#if 0
     /* Create precompiled statement */
     me->m_authStmt = mysql_stmt_init(me->m_dbConn);
     if (!me->m_authStmt) {
@@ -307,6 +317,7 @@ static int initFromConfig(struct MyPlugin *me, const char *configFile) {
         dropbear_log(LOG_ERR, "Failed to prepare auth statement: %s", mysql_stmt_error(me->m_authStmt));
         goto done;
     }
+#endif
 
     // Success!
     retVal = 1;
@@ -340,156 +351,131 @@ static int sqlRunQueryAuth(struct MyPlugin *me,
 
     int ok = 0;
     int rc;
-    MYSQL_BIND queryBind[3];        // Query requires 3 arguments
-    MYSQL_BIND resBind[3];          // Response contains 3 columns
-
-    char *resClientId = NULL;
-    my_bool resClientIdIsNull = 0;
-    my_bool resClientIdIsError = 0;
-    unsigned long resClientIdLen = 0;
-
-    char *resOptions = NULL;
-    my_bool resOptionsIsNull = 0;
-    my_bool resOptionsIsError = 0;
-    unsigned long resOptionsLen = 0;
-
-    char *resPubkey = NULL;         // Dynamically allocated using prefetch
-    my_bool resPubkeyIsNull = 0;
-    my_bool resPubkeyIsError = 0;
-    unsigned long resPubkeyLen;
+    char *query = NULL;
+    MYSQL_RES *res = NULL;
+    MYSQL_ROW  row;
+    my_ulonglong numRows;
+    unsigned int numFields;
+    unsigned long *fieldLengths;
+    char *keyblobHex = NULL;
 
     if (me->m_verbose) {
         dropbear_log(LOG_DEBUG, MSG_PREFIX "Pre-auth, user '%s'...", username);
     }
-
     *clientIdOut = NULL;
     *optionsOut = NULL;
     *pubkeyOut = NULL;
     *pubkeyOutLen = 0;
-    memset(queryBind, 0, sizeof(queryBind));
-    memset(resBind, 0, sizeof(resBind));
 
-    // Query bind #0: user name
-    queryBind[0].buffer_length = strlen(username);
-    queryBind[0].buffer = strdup(username);
-    queryBind[0].buffer_type = MYSQL_TYPE_STRING;
-
-    // Query bind #1: keyform
-    queryBind[1].buffer = malloc(algolen);
-    if (!queryBind[1].buffer) {
-        dropbear_log(LOG_CRIT, MSG_PREFIX "Out of memory duplicating algo");
-        goto done;
-    }
-    queryBind[1].buffer_length = algolen;
-    memcpy(queryBind[1].buffer, algo, algolen);
-    queryBind[1].buffer_type = MYSQL_TYPE_STRING;
-
-    // Query bind #2: the public key to authenticate
-    queryBind[2].buffer = malloc(keybloblen);
-    if (!queryBind[2].buffer) {
-        dropbear_log(LOG_CRIT, MSG_PREFIX "Out of memory duplicating keyblob");
-        goto done;
-    }
-    queryBind[2].buffer_length = keybloblen;
-    memcpy(queryBind[2].buffer, keyblob, keybloblen);
-    queryBind[2].buffer_type = MYSQL_TYPE_BLOB;
-
-    if (mysql_stmt_bind_param(me->m_authStmt, &queryBind[0])) {
-        dropbear_log(LOG_ERR, MSG_PREFIX "Failed to bind params to SQL auth statement: %s", mysql_stmt_error(me->m_authStmt));
-        goto done;
-    }
-    if (mysql_stmt_execute(me->m_authStmt)) {
-        dropbear_log(LOG_ERR, MSG_PREFIX "Failed to run auth statement: %s",mysql_stmt_error(me->m_authStmt));
+    /* Ensure the connection with the server is still up */
+    if (mysql_ping(me->m_dbConn)) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "MySQL server ping error: %s", mysql_error(me->m_dbConn));
         goto done;
     }
 
-    // Response bind #0: clientID
-    resBind[0].buffer_type = MYSQL_TYPE_STRING;
-    resBind[0].buffer_length = 0;           // Pre-fetch
-    resBind[0].buffer = NULL;
-    resBind[0].is_null = &resClientIdIsNull;
-    resBind[0].length = &resClientIdLen;
-    resBind[0].error = &resClientIdIsError;
+    /* First convert the keyblob to a hex form */
+    keyblobHex = malloc(keybloblen * 2 + 1);
+    if (!keyblobHex) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "Out of memory allocating keyblobHex");
+        goto done;
+    }
+    mysql_hex_string(keyblobHex, keyblob, keybloblen);
 
-    // Response bind #1: Options
-    resBind[1].buffer_type = MYSQL_TYPE_STRING;
-    resBind[1].buffer_length = 0;           // Pre-fetch
-    resBind[1].buffer = NULL;
-    resBind[1].is_null = &resOptionsIsNull;
-    resBind[1].length = &resOptionsLen;
-    resBind[1].error = &resOptionsIsError;
-
-    // Response bind #2: Options
-    resBind[2].buffer_type = MYSQL_TYPE_BLOB;
-    resBind[2].buffer_length = 0;           // Pre-fetch it to determine the real size of the public key
-    resBind[2].buffer = NULL;               // No need to allocate anything during pre-fetch
-    resBind[2].is_null = &resPubkeyIsNull;
-    resBind[2].length = &resPubkeyLen;
-    resBind[2].error = &resPubkeyIsError;
-
-    if (mysql_stmt_bind_result(me->m_authStmt, &resBind[0])) {
-        dropbear_log(LOG_ERR, MSG_PREFIX "Failed to bind results to SQL auth statement: %s", mysql_stmt_error(me->m_authStmt));
+    rc = asprintf(&query, 
+//               cli   opts  pubkey    table      user            keyform         keyhash
+//               |     |     |         |          |               |               |
+        "SELECT `%s`, `%s`, `%s` FROM `%s` WHERE `%s`=\"%s\" AND `%s`=\"%.*s\" AND `%s`=UNHEX(SHA2(X'%s', 256))",
+//               |     |     |                        |          |                     |
+//               r0    r1    r2                       q0         q1                    q2
+            me->m_colClientId, 
+            me->m_colAuthOptions,
+            me->m_colAuthPubkey,
+            me->m_tableAuth, 
+            me->m_colAuthUser, 
+            username,
+            me->m_colAuthKeyform, 
+            algolen,
+            algo,
+            me->m_colAuthKeyhash,
+            keyblobHex);
+    if (rc < 0) {
+        dropbear_log(LOG_ERR, MSG_PREFIX  "Error composing auth query");
         goto done;
     }
 
-    // Prefetch row - Used only to determine the pubkey size
-    if (mysql_stmt_fetch(me->m_authStmt) == MYSQL_NO_DATA) {
-        // No match
+    if (mysql_query(me->m_dbConn, query)) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "Failed to run auth statement: %s",mysql_error(me->m_dbConn));
+        if (me->m_verbose) {
+            dropbear_log(LOG_ERR, MSG_PREFIX "query=%s", query);
+        }
+        goto done;
+    }
+
+    res = mysql_store_result(me->m_dbConn);
+    if (!res) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "Failed to get result set from auth query: %s",mysql_error(me->m_dbConn));
+        goto done;
+    }
+
+    /* Expected one row */
+    numRows = mysql_num_rows(res);
+    if (numRows == 0) {
         if (me->m_verbose) {
             dropbear_log(LOG_DEBUG, MSG_PREFIX "Non matching entries");
         }
         ok = 1;
         goto done;
     }
+    if (numRows > 1) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "Unexpected number of results for auth query (%llu): %s", numRows, mysql_error(me->m_dbConn));
+        goto done;
+    }
 
-    // There is at least one row matching
-    if (!resClientIdIsNull) {
-        *clientIdOut = malloc(resClientIdLen);
+    /* Expect 3 fields: cli, opts, pubkey */
+    numFields = mysql_num_fields(res);
+    if (numFields != 3) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "Unexpected number of fields for auth query (%d): %s", numFields, mysql_error(me->m_dbConn));
+        goto done;
+    }
+
+    row = mysql_fetch_row(res);
+    if (!row) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "Unexpected fetch_row failed in auth query: %s", mysql_error(me->m_dbConn));
+        goto done;
+    }
+    fieldLengths = mysql_fetch_lengths(res);
+
+    /* client can be NULL */
+    if (row[0]) {
+        *clientIdOut = calloc(fieldLengths[0]+1, 1);
         if (!*clientIdOut) {
-            dropbear_log(LOG_CRIT, MSG_PREFIX "Out of memory allocating client ID (size=%d)", resClientIdLen);
+            dropbear_log(LOG_CRIT, MSG_PREFIX "Out of memory allocating client ID (size=%d)", fieldLengths[0]);
             goto done;
         }
-        resBind[0].buffer = *clientIdOut;
-        resBind[0].buffer_length = resClientIdLen;
-        rc = mysql_stmt_fetch_column(me->m_authStmt, &resBind[0], 0, 0);
-        if (rc) {
-            dropbear_log(LOG_ERR, MSG_PREFIX "Error getting clientId column: %s", mysql_stmt_error(me->m_authStmt));
-            goto done;
-        }
-    } // else *clientIdOut is already NULL
+        memcpy(*clientIdOut, row[0], fieldLengths[0]);
+    }
 
-    if (!resOptionsIsNull) {
-        *optionsOut = malloc(resOptionsLen);
+    /* options can be NULL */
+    if (row[1]) {
+        *optionsOut = calloc(fieldLengths[1]+1, 1);
         if (!*optionsOut) {
-            dropbear_log(LOG_CRIT, MSG_PREFIX "Out of memory allocating options (size=%d)", resOptionsLen);
+            dropbear_log(LOG_CRIT, MSG_PREFIX "Out of memory allocating options (size=%d)", fieldLengths[1]);
             goto done;
         }
-        resBind[1].buffer = *optionsOut;
-        resBind[1].buffer_length = resOptionsLen;
-        rc = mysql_stmt_fetch_column(me->m_authStmt, &resBind[1], 1, 0);
-        if (rc) {
-            dropbear_log(LOG_ERR, MSG_PREFIX "Error getting options column: %s", mysql_stmt_error(me->m_authStmt));
-            goto done;
-        }
-    } // else *clientIdOut is already NULL
+        memcpy(*optionsOut, row[1], fieldLengths[1]);
+    }
 
-    // pubkey cannot be NULL
-    if (resPubkeyIsNull) {
-        dropbear_log(LOG_WARNING, MSG_PREFIX "Found NULL pubkey, invalid record");
-        ok = 1;
-        goto done;
-    }
-    *pubkeyOutLen =  resPubkeyLen;
-    *pubkeyOut = malloc(resPubkeyLen);
-    if (!*pubkeyOut) {
-        dropbear_log(LOG_CRIT, MSG_PREFIX "Out of memory allocating pubkey (size=%d)", resPubkeyLen);
-        goto done;
-    }
-    resBind[2].buffer = *pubkeyOut;
-    resBind[2].buffer_length = resPubkeyLen;
-    rc = mysql_stmt_fetch_column(me->m_authStmt, &resBind[2], 2, 0);
-    if (rc) {
-        dropbear_log(LOG_ERR, MSG_PREFIX "Error getting pubkey column: %s", mysql_stmt_error(me->m_authStmt));
+    /* pubkey cannot be NULL */
+    if (row[2]) {
+        *pubkeyOut = malloc(fieldLengths[2]);
+        if (!*pubkeyOut) {
+            dropbear_log(LOG_CRIT, MSG_PREFIX "Out of memory allocating pubkey (size=%d)", fieldLengths[2]);
+            goto done;
+        }
+        memcpy(*pubkeyOut, row[2], fieldLengths[2]);
+        *pubkeyOutLen = fieldLengths[2];
+    } else {
+        dropbear_log(LOG_ERR, MSG_PREFIX "Unexpected NULL pubkey in auth query");
         goto done;
     }
 
@@ -503,47 +489,45 @@ done:
         if (*pubkeyOut) free(*pubkeyOut);
         *pubkeyOutLen = 0;
     }
-    {
-        int i;
-        for (i = 0; i < 3; ++i) {
-            if (queryBind[i].buffer) {
-                free(queryBind[i].buffer);
-            }
-        }
+    if (res) {
+        mysql_free_result(res);
     }
-    mysql_stmt_reset(me->m_authStmt);
+    if (query) {
+        free(query);
+    }
+    if (keyblobHex) {
+        free(keyblobHex);
+    }
     return ok;
 }
 
 // }}}
-
 // {{{ sqlRunStatusUpdate
 // ----------------------------------------------------------------------------
 // Returns 1 if the query was executed successfully, 0 if an error occurred or
 // the query was skipped
 int sqlRunStatusUpdate(struct MyPlugin *me, struct MySession *session, int statusInt, int pid) {
     char * query = NULL;
-    size_t queryLen = 0;
     int ok = 0;
-    queryLen = strlen(AUTH_SUCCESS_QUERY) + 
-        strlen(me->m_tableStatus) +
-        strlen(me->m_colStatusConnected) + 1 +      // 1 for the 1|0 value
-        strlen(me->m_colStatusPid) + 7 +            // 7 chars for PID
-        strlen(me->m_colStatusAddress) + 15 +       // 15 chars for addr
-        strlen(me->m_colClientId) + strlen(session->m_clientId) +
-        10;     // Add an extra 10 chars
-    query = malloc(queryLen);
-    if (!query) {
-        dropbear_log(LOG_CRIT, MSG_PREFIX "Out of memory allocating status update query");
-        return 0;
+
+    /* Ensure the connection with the server is still up */
+    if (mysql_ping(me->m_dbConn)) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "MySQL server ping error: %s", mysql_error(me->m_dbConn));
+        goto done;
     }
 
-    snprintf(query, queryLen, AUTH_SUCCESS_QUERY, 
+    if (asprintf(&query,
+//               table    conn  1/0  pid   xxx  addr   IP          cliId   val
+//               |        |     |    |     |    |      |           |       |
+        "UPDATE `%s` SET `%s` = %d, `%s` = %d, `%s` = \"%s\" WHERE `%s` = \"%s\"",
             me->m_tableStatus,
             me->m_colStatusConnected, statusInt,
             me->m_colStatusPid, pid,
             me->m_colStatusAddress, (me->m_clientIp ? me->m_clientIp : ""),
-            me->m_colClientId, session->m_clientId);
+            me->m_colClientId, session->m_clientId) < 0) {
+        dropbear_log(LOG_ERR, MSG_PREFIX  "Error composing statusUpdate query");
+        goto done;
+    }
 
     /* Update records */
     if (mysql_query(me->m_dbConn, query)) {
@@ -555,7 +539,11 @@ int sqlRunStatusUpdate(struct MyPlugin *me, struct MySession *session, int statu
         }
         ok = 1;
     }
-    free(query);
+
+done:
+    if (query) {
+        free(query);
+    }
     return ok;
 }
 
@@ -566,27 +554,26 @@ int sqlRunStatusUpdate(struct MyPlugin *me, struct MySession *session, int statu
 // the query was skipped
 int sqlRunLogInsert(struct MyPlugin *me, struct MySession *session, const char *evt) {
     char * query = NULL;
-    size_t queryLen = 0;
     int ok = 0;
-    queryLen = strlen(LOG_ENTRY_QUERY) + 
-        strlen(me->m_tableLog) +
-        strlen(me->m_colClientId) +
-        strlen(me->m_colLogTs) +
-        strlen(me->m_colLogEvent) +
-        strlen(session->m_clientId) +
-        20;     // event
-    query = malloc(queryLen);
-    if (!query) {
-        dropbear_log(LOG_CRIT, MSG_PREFIX "Out of memory allocating log query");
-        return 0;
+
+    /* Ensure the connection with the server is still up */
+    if (mysql_ping(me->m_dbConn)) {
+        dropbear_log(LOG_ERR, MSG_PREFIX "MySQL server ping error: %s", mysql_error(me->m_dbConn));
+        goto done;
     }
 
-    snprintf(query, queryLen, LOG_ENTRY_QUERY, 
+    if (asprintf(&query,
+//                    table cli   ts    event          cli            event
+//                    |     |     |     |              |              |
+        "INSERT INTO `%s` (`%s`, `%s`, `%s`) VALUES (\"%s\", now(), \"%s\")",
             me->m_tableLog,
             me->m_colClientId,
             me->m_colLogTs,
             me->m_colLogEvent,
-            session->m_clientId, evt);
+            session->m_clientId, evt) < 0) {
+        dropbear_log(LOG_ERR, MSG_PREFIX  "Error composing logInsert query");
+        goto done;
+    }
 
     /* Update records */
     if (mysql_query(me->m_dbConn, query)) {
@@ -598,7 +585,11 @@ int sqlRunLogInsert(struct MyPlugin *me, struct MySession *session, const char *
         }
         ok = 1;
     }
-    free(query);
+
+done:
+    if (query) {
+        free(query);
+    }
     return ok;
 }
 
@@ -618,10 +609,12 @@ static void MyDeletePlugin(struct EPKAInstance *instance) {
 
     if (me) {
         int verbose = me->m_verbose;
+        /*
         if (me->m_authStmt) {
             mysql_stmt_close(me->m_authStmt);
             me->m_authStmt = NULL;
         }
+        */
         if (me->m_dbConn) {
             mysql_close(me->m_dbConn);
             me->m_dbConn = NULL;
