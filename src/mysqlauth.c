@@ -717,9 +717,7 @@ static int MyCheckPubKey(struct EPKAInstance *instance,
         dbOptions = NULL;       // to the session object. set it to NULL so in case
         dbClientId = NULL;      // of error from now on they won't be free'd twice
         *sessionInOut = &retVal->m_parent;
-        if (me->m_verbose) {
-            dropbear_log(LOG_DEBUG, MSG_PREFIX "User '%s' pre-auth success", username);
-        }
+        dropbear_log(LOG_DEBUG, MSG_PREFIX "Client pre-auth success: %s:%s", username, retVal->m_clientId);
     }
     // Session created or already present, (re)check key
     if (strcmp(username, retVal->m_username) != 0) {
