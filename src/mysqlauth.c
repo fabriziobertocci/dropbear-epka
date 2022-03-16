@@ -83,7 +83,6 @@
 #include <string.h>
 #include "cJSON.h"
 
-#include <my_global.h>
 #include <mysql.h>
 
 #include <sys/types.h>      /* For getpid() */
@@ -168,7 +167,7 @@ struct MySession {
 // ----------------------------------------------------------------------------
 // Returns 1 if success, 0 if an error occurred
 static int databaseConnect(struct MyPlugin *me) {
-    my_bool arg = 1;
+    bool arg = 1;
 
     // Connect to database
     me->m_dbConn = mysql_init(NULL);
